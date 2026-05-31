@@ -1,0 +1,16 @@
+## Interface: 120005
+## Author: OldDogy
+## Version: 0.1.0
+## Title: HoverToolTip
+## Notes: Standalone HoverToolTip module for ElvUI.
+## DefaultState: Enabled
+## Dependencies: ElvUI
+## OptionalDeps: Details
+## SavedVariables: HoverToolTipDB
+## Bindings: Bindings.xml
+## X-Flavor: Mainline
+
+Init.lua
+Defaults.lua
+Core.lua
+Options.lua

@@ -1,0 +1,9 @@
+<Bindings>
+	<Binding name="HOVERTOOLTIP_DETAILS" category="HoverToolTip" runOnUp="true">
+		if keystate == "down" then
+			HoverToolTip_SetDetailsBindingState(true);
+		else
+			HoverToolTip_SetDetailsBindingState(false);
+		end
+	</Binding>
+</Bindings>
