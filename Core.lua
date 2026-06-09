@@ -1,4 +1,7 @@
-local E, L, V, P, G = unpack(ElvUI)
+local E, L
+if _G.ElvUI then
+	E, L = unpack(_G.ElvUI)
+end
 local module = _G.HoverToolTip
 
 local _G = _G
@@ -26,7 +29,7 @@ module.debugLog = module.debugLog or {}
 module.traceLog = module.traceLog or {}
 module.styledTooltips = {}
 
-_G.BINDING_NAME_HOVERTOOLTIP_DETAILS = _G.BINDING_NAME_HOVERTOOLTIP_DETAILS or "Hover ToolTip: Hold Full Details"
+_G.BINDING_NAME_HOVERTOOLTIP_DETAILS = _G.BINDING_NAME_HOVERTOOLTIP_DETAILS or "HoverToolTip: Hold Full Details"
 
 local IsDetailsOverrideActive
 local IsDetailsOverrideForContext
@@ -36,6 +39,7 @@ local IsObjectTooltip
 local IsUnitTooltip
 local GetFirstTextureAlpha
 local TraceLog
+local GetBlizzardUnitFrameUnit
 
 local TOOLTIP_NAMES = {
 	"GameTooltip",
@@ -179,6 +183,24 @@ local function IsSecretValue(value)
 	return issecretvalue and issecretvalue(value)
 end
 
+function module:NormalizeTooltipLabelText(text)
+	if not text or type(text) ~= "string" or IsSecretValue(text) then
+		return nil
+	end
+
+	text = strgsub(text, "|c%x%x%x%x%x%x%x%x", "")
+	text = strgsub(text, "|r", "")
+	return strmatch(text, "^%s*(.-)%s*$")
+end
+
+function module:EscapePatternText(text)
+	if not text then
+		return nil
+	end
+
+	return strgsub(text, "([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+end
+
 function module:GetRestrictedInstanceState(tooltip)
 	if tooltip ~= nil and tooltip ~= GameTooltip then
 		return false, "none"
@@ -202,6 +224,86 @@ end
 
 function module:IsRestrictedInstanceTooltip(tooltip)
 	return self:GetRestrictedInstanceState(tooltip)
+end
+
+function module:ShouldUseRestrictedInstancePath(tooltip)
+	if not self:IsRestrictedInstanceTooltip(tooltip) then
+		return false
+	end
+
+	local owner = tooltip == GameTooltip and tooltip.hoverToolTipForcedUnitFrameOwner
+	if owner and GetBlizzardUnitFrameUnit(owner) then
+		return false
+	end
+
+	local context = self:GetTooltipContext(tooltip)
+	return not (
+		context
+		and context.isUnitFrameTooltip
+		and context.unitKind == "player"
+		and not context.unitIsSecret
+	)
+end
+
+function module:IsMerathilisModuleEnabled(key)
+	if type(_G.ElvUI_MerathilisUI) ~= "table" or not E or not E.db or not E.db.mui then
+		return false
+	end
+
+	local merathilisDB = E.db.mui[key]
+	if type(merathilisDB) == "table" then
+		return merathilisDB.enable ~= false
+	end
+
+	return false
+end
+
+function module:IsMerathilisHoverToolTipEnabled()
+	return self:IsMerathilisModuleEnabled("hoverToolTip")
+end
+
+function module:IsMerathilisNameHoverEnabled()
+	return self:IsMerathilisModuleEnabled("nameHover")
+end
+
+function module:ShouldStandDownForMerathilis()
+	return self:IsMerathilisHoverToolTipEnabled() or self:IsMerathilisNameHoverEnabled()
+end
+
+function module:HasElvUIUnitFrames()
+	if not E or type(E.GetModule) ~= "function" then
+		return false
+	end
+
+	if E.private and E.private.unitframe and E.private.unitframe.enable == false then
+		return false
+	end
+
+	local ok, UF = pcall(E.GetModule, E, "UnitFrames", true)
+	return ok and UF ~= nil
+end
+
+function module:OpenMerathilisHoverToolTipOptions()
+	if not E then
+		return
+	end
+
+	if type(E.ToggleOptions) == "function" then
+		pcall(E.ToggleOptions, E)
+	end
+
+	local ACD = E.Libs and E.Libs.AceConfigDialog
+	if ACD and type(ACD.SelectGroup) == "function" then
+		local function selectGroup()
+			pcall(ACD.SelectGroup, ACD, "ElvUI", "mui", "modules", "hoverToolTip")
+		end
+
+		if C_Timer and type(C_Timer.After) == "function" then
+			C_Timer.After(0, selectGroup)
+		else
+			selectGroup()
+		end
+	end
 end
 
 local function GetFrameNameSafe(frame)
@@ -338,6 +440,73 @@ local function IsNameplateFrame(frame)
 	return type(name) == "string" and (strfind(name, "NamePlate", 1, true) or strfind(name, "Plater", 1, true))
 end
 
+local BLIZZARD_UNIT_FRAME_NAMES = {
+	PlayerFrame = true,
+	PetFrame = true,
+	TargetFrame = true,
+	TargetFrameToT = true,
+	FocusFrame = true,
+	FocusFrameToT = true,
+}
+
+local function IsBlizzardUnitFrame(frame)
+	local name = GetFrameNameSafe(frame)
+	if type(name) ~= "string" then
+		return false
+	end
+
+	if BLIZZARD_UNIT_FRAME_NAMES[name] then
+		return true
+	end
+
+	return strfind(name, "^Compact") ~= nil
+		or strfind(name, "^PartyMemberFrame%d+") ~= nil
+		or strfind(name, "^Boss%dTargetFrame") ~= nil
+		or strfind(name, "^ArenaEnemyFrame%d+") ~= nil
+end
+
+GetBlizzardUnitFrameUnit = function(frame)
+	local current = frame
+	for _ = 1, 8 do
+		if not current then
+			break
+		end
+
+		local unit = GetFrameUnitSafe(current)
+		if UnitExistsSafe(unit) then
+			return unit
+		end
+
+		local name = GetFrameNameSafe(current)
+		if name == "PlayerFrame" or name == "PlayerFrameContent" then
+			return "player"
+		elseif name == "PetFrame" then
+			return "pet"
+		elseif name == "TargetFrame" then
+			return "target"
+		elseif name == "TargetFrameToT" then
+			return "targettarget"
+		elseif name == "FocusFrame" then
+			return "focus"
+		elseif name == "FocusFrameToT" then
+			return "focustarget"
+		elseif type(name) == "string" then
+			local partyIndex = strmatch(name, "^PartyMemberFrame(%d+)")
+			local bossIndex = strmatch(name, "^Boss(%d+)TargetFrame")
+			local arenaIndex = strmatch(name, "^ArenaEnemyFrame(%d+)")
+			if partyIndex then
+				return "party" .. partyIndex
+			elseif bossIndex then
+				return "boss" .. bossIndex
+			elseif arenaIndex then
+				return "arena" .. arenaIndex
+			end
+		end
+
+		current = GetFrameParentSafe(current)
+	end
+end
+
 local function IsUnitOrNameplateFrame(frame)
 	local current = frame
 	for _ = 1, 8 do
@@ -345,7 +514,7 @@ local function IsUnitOrNameplateFrame(frame)
 			break
 		end
 
-		if UnitExistsSafe(GetFrameUnitSafe(current)) or IsNameplateFrame(current) then
+		if UnitExistsSafe(GetFrameUnitSafe(current)) or UnitExistsSafe(GetBlizzardUnitFrameUnit(current)) or IsNameplateFrame(current) or IsBlizzardUnitFrame(current) then
 			return true
 		end
 
@@ -583,7 +752,20 @@ local function PopulateUnitClassification(context)
 	context.unitKind = GetClassificationKind(context)
 end
 
+function module:IsNPCStyleUnit(context)
+	return context
+		and (
+			context.unitKind == "npc"
+			or (
+				context.unitKind == "controlled"
+				and not context.unitIsPlayer
+				and context.unitCreatureType
+			)
+		)
+end
+
 function module:GetTooltipContext(tooltip)
+	local data = GetTooltipDataSafe(tooltip)
 	local context = {
 		isGameTooltip = tooltip == GameTooltip,
 		tooltipName = GetFrameNameSafe(tooltip),
@@ -615,7 +797,7 @@ function module:GetTooltipContext(tooltip)
 			or IsSoftTargetUnitTooltip(context)
 			or IsClickedWorldUnitTooltip(context)
 			or (context.isObject and context.ownerWorld)
-			or (not context.isUnit and context.ownerWorld and context.focusWorld)
+			or (not data and not context.isUnit and context.ownerWorld and context.focusWorld)
 		)
 	context.shouldStyleTooltip = context.isWorldTooltip or context.isUnitFrameTooltip
 
@@ -646,7 +828,7 @@ end
 
 function module:IsWorldNPCTooltip(tooltip)
 	local shouldModify, context = self:ShouldModifyTooltip(tooltip)
-	return shouldModify and context.unitKind == "npc", context
+	return shouldModify and self:IsNPCStyleUnit(context), context
 end
 
 function module:IsWorldControlledUnitTooltip(tooltip)
@@ -696,6 +878,12 @@ end
 local function SetRegionAlpha(region, alpha)
 	if region and type(region.SetAlpha) == "function" and not IsForbidden(region) and not IsSecretValue(alpha) then
 		pcall(region.SetAlpha, region, alpha)
+	end
+end
+
+function module:SetRegionVertexColor(region, r, g, b, a)
+	if region and type(region.SetVertexColor) == "function" and not IsForbidden(region) then
+		pcall(region.SetVertexColor, region, r, g, b, a)
 	end
 end
 
@@ -879,6 +1067,20 @@ local function StoreOriginalTooltipState(tooltip)
 		end
 	end
 
+	if type(tooltip.GetWidth) == "function" then
+		local ok, width = pcall(tooltip.GetWidth, tooltip)
+		if ok and not IsSecretValue(width) and type(width) == "number" then
+			original.width = width
+		end
+	end
+
+	if type(tooltip.GetHeight) == "function" then
+		local ok, height = pcall(tooltip.GetHeight, tooltip)
+		if ok and not IsSecretValue(height) and type(height) == "number" then
+			original.height = height
+		end
+	end
+
 	for _, key in ipairs(BACKDROP_REGIONS) do
 		local region = tooltip[key]
 		if region and type(region.GetAlpha) == "function" and not IsForbidden(region) then
@@ -953,6 +1155,16 @@ local function RestoreTooltipState(tooltip)
 		SafeCall(tooltip, "SetScale", original.scale)
 	end
 
+	if tooltip.hoverToolTipResizedToVisibleText then
+		if original.width and type(tooltip.SetWidth) == "function" then
+			pcall(tooltip.SetWidth, tooltip, original.width)
+		end
+
+		if original.height and type(tooltip.SetHeight) == "function" then
+			pcall(tooltip.SetHeight, tooltip, original.height)
+		end
+	end
+
 	for key, alpha in pairs(original.regions or {}) do
 		SetRegionAlpha(tooltip[key], alpha)
 	end
@@ -1006,10 +1218,21 @@ local function RestoreTooltipState(tooltip)
 
 		end
 	end
+
+	if tooltip.hoverToolTipCustomBackdrop then
+		SetRegionAlpha(tooltip.hoverToolTipCustomBackdrop, 0)
+		SafeCall(tooltip.hoverToolTipCustomBackdrop, "Hide")
+	end
+
+	tooltip.hoverToolTipResizedToVisibleText = nil
 end
 
 local function ReleaseTooltipState(tooltip)
 	RestoreTooltipState(tooltip)
+	if tooltip and tooltip.hoverToolTipCustomBackdrop then
+		SetRegionAlpha(tooltip.hoverToolTipCustomBackdrop, 0)
+		SafeCall(tooltip.hoverToolTipCustomBackdrop, "Hide")
+	end
 	ResetOriginalTooltipState(tooltip)
 end
 
@@ -1043,19 +1266,60 @@ local function ApplyPixelSettings(fontString)
 	end
 end
 
+function module:GetConfiguredFontPath()
+	local db = module.db
+	local key = db and db.fontFace
+	if not key or key == "DEFAULT" then
+		return
+	end
+
+	for _, font in ipairs(module.fontChoices or {}) do
+		if font.key == key then
+			local styleKey = db.fontStyle or "REGULAR"
+			for _, style in ipairs(module.fontStyleChoices or {}) do
+				if style.key == styleKey then
+					return font[style.field] or font.bold or font.regular
+				end
+			end
+
+			return font.regular
+		end
+	end
+end
+
 local function ApplyFont(fontString, size, outline)
 	if not fontString or IsForbidden(fontString) then
 		return false
 	end
 
-	if fontString.hoverToolTipSize == size and fontString.hoverToolTipOutline == outline then
-		return false
-	end
-
-	if fontString.FontTemplate then
+	local configuredFont = module:GetConfiguredFontPath()
+	if fontString.FontTemplate and not configuredFont then
 		fontString:FontTemplate(nil, size, outline)
-	elseif fontString.SetFontObject then
-		fontString:SetFontObject(GameTooltipText)
+	elseif fontString.SetFont then
+		local font = configuredFont or (fontString.GetFont and fontString:GetFont())
+		if not font and GameTooltipText and GameTooltipText.GetFont then
+			font = GameTooltipText:GetFont()
+		end
+		font = font or STANDARD_TEXT_FONT
+
+		local flags = outline or ""
+		local shadow = false
+		if flags == "NONE" then
+			flags = ""
+		elseif strfind(flags, "SHADOW", 1, true) then
+			shadow = true
+			flags = strgsub(flags, "SHADOW", "")
+		end
+
+		pcall(fontString.SetFont, fontString, font, size, flags)
+
+		if fontString.SetShadowOffset then
+			fontString:SetShadowOffset(shadow and 1 or 0, shadow and -1 or 0)
+		end
+
+		if fontString.SetShadowColor then
+			fontString:SetShadowColor(0, 0, 0, shadow and 1 or 0)
+		end
 	end
 
 	ApplyPixelSettings(fontString)
@@ -1072,41 +1336,132 @@ local function ApplyConfiguredLineStyle(tooltip, index, isTitle)
 
 	local size = isTitle and (db.titleTextSize or 14) or (db.bodyTextSize or 11)
 	local outline = isTitle and (db.titleTextOutline or "SHADOWOUTLINE") or (db.bodyTextOutline or "SHADOWOUTLINE")
+	local alpha = isTitle and (db.titleTextAlpha or 1) or (db.textAlpha or 1)
 	local left = GetTooltipLine(tooltip, "Left", index)
 	local right = GetTooltipLine(tooltip, "Right", index)
 
 	ApplyFont(left, size, outline)
 	ApplyFont(right, size, outline)
-	SetRegionAlpha(left, db.textAlpha or 1)
-	SetRegionAlpha(right, db.textAlpha or 1)
+	module:SetFontStringVisualAlpha(left, alpha)
+	module:SetFontStringVisualAlpha(right, alpha)
+end
+
+function module:GetTooltipBackdropStyle(key)
+	for _, style in ipairs(module.tooltipBackdropStyles or {}) do
+		if style.key == key then
+			return style
+		end
+	end
+
+	return module.tooltipBackdropStyles and module.tooltipBackdropStyles[1]
+end
+
+function module:SetFontStringVisualAlpha(fontString, alpha)
+	if not fontString or IsForbidden(fontString) or IsSecretValue(alpha) then
+		return
+	end
+
+	SetRegionAlpha(fontString, alpha)
+end
+
+function module:SetCustomTooltipBackdrop(tooltip, db)
+	if not tooltip or IsForbidden(tooltip) then
+		return
+	end
+
+	if not db.customTooltipBackdrop then
+		if tooltip.hoverToolTipCustomBackdrop then
+			SetRegionAlpha(tooltip.hoverToolTipCustomBackdrop, 0)
+			SafeCall(tooltip.hoverToolTipCustomBackdrop, "Hide")
+		end
+		return
+	end
+
+	local style = module:GetTooltipBackdropStyle(db.tooltipBackdropStyle)
+	if not style or not style.texture then
+		return
+	end
+
+	if not tooltip.hoverToolTipCustomBackdrop and type(tooltip.CreateTexture) == "function" then
+		local texture = tooltip:CreateTexture(nil, "BACKGROUND", nil, -7)
+		texture:SetPoint("TOPLEFT", tooltip, "TOPLEFT", -10, 10)
+		texture:SetPoint("BOTTOMRIGHT", tooltip, "BOTTOMRIGHT", 10, -10)
+		tooltip.hoverToolTipCustomBackdrop = texture
+	end
+
+	local texture = tooltip.hoverToolTipCustomBackdrop
+	if texture then
+		local scale = tonumber(db.customTooltipBackdropScale) or 1
+		scale = math.max(0.5, math.min(scale, 1.75))
+		local outsetX = 10 + ((scale - 1) * 42)
+		local outsetY = 10 + ((scale - 1) * 24)
+
+		SafeCall(texture, "ClearAllPoints")
+		texture:SetPoint("TOPLEFT", tooltip, "TOPLEFT", -outsetX, outsetY)
+		texture:SetPoint("BOTTOMRIGHT", tooltip, "BOTTOMRIGHT", outsetX, -outsetY)
+		texture:SetTexture(style.texture)
+		module:SetRegionVertexColor(texture, 1, 1, 1, 1)
+		if texture.SetBlendMode then
+			texture:SetBlendMode("BLEND")
+		end
+		if texture.SetHorizTile then
+			texture:SetHorizTile(false)
+		end
+		if texture.SetVertTile then
+			texture:SetVertTile(false)
+		end
+		texture:SetTexCoord(0, 1, 0, 1)
+		SetRegionAlpha(texture, db.customTooltipBackdropAlpha or 0.85)
+		SafeCall(texture, "Show")
+	end
 end
 
 local function SetTooltipBackdropAlpha(tooltip, db)
-	local backdropAlpha = db.hideBackdrop and 0 or (db.backdropAlpha or db.alpha or 0.75)
-	local borderAlpha = db.hideBackdrop and 0 or (db.borderAlpha or backdropAlpha)
+	local usingCustomBackdrop = db.customTooltipBackdrop == true
+	local backdropAlpha = (db.hideBackdrop or usingCustomBackdrop) and 0 or (db.backdropAlpha or db.alpha or 0.75)
+	local borderAlpha = (db.hideBackdrop or usingCustomBackdrop) and 0 or (db.borderAlpha or backdropAlpha)
+	local backdropR, backdropG, backdropB = 0, 0, 0
+	local borderR, borderG, borderB = 0, 0, 0
 
-	SafeCall(tooltip, "SetBackdropColor", 0, 0, 0, backdropAlpha)
-	SafeCall(tooltip, "SetBackdropBorderColor", 0, 0, 0, borderAlpha)
+	SafeCall(tooltip, "SetBackdropColor", backdropR, backdropG, backdropB, backdropAlpha)
+	SafeCall(tooltip, "SetBackdropBorderColor", borderR, borderG, borderB, borderAlpha)
 
 	for _, key in ipairs(BACKDROP_REGIONS) do
+		if key == "NineSlice" then
+			module:SetRegionVertexColor(tooltip[key], borderR, borderG, borderB, borderAlpha)
+		else
+			module:SetRegionVertexColor(tooltip[key], backdropR, backdropG, backdropB, backdropAlpha)
+		end
 		SetRegionAlpha(tooltip[key], key == "NineSlice" and borderAlpha or backdropAlpha)
 	end
 
 	ForEachNineSliceRegion(tooltip, function(_, region)
+		module:SetRegionVertexColor(region, borderR, borderG, borderB, borderAlpha)
 		SetRegionAlpha(region, borderAlpha)
 	end)
 
 	ForEachTooltipTextureRegion(tooltip, function(region)
+		if region == tooltip.hoverToolTipCustomBackdrop then
+			return
+		end
+
+		module:SetRegionVertexColor(region, backdropR, backdropG, backdropB, backdropAlpha)
 		SetRegionAlpha(region, backdropAlpha)
 	end)
 
 	ForEachTooltipChromeFrame(tooltip, function(_, frame)
 		SetRegionAlpha(frame, backdropAlpha)
 	end)
+
+	module:SetCustomTooltipBackdrop(tooltip, db)
 end
 
 local function PreHideUnitFrameTooltipChrome(tooltip, owner)
-	if not module.db or not module.db.enable or tooltip ~= GameTooltip or IsForbidden(tooltip) or module:IsRestrictedInstanceTooltip(tooltip) then
+	if not module.db or not module.db.enable or tooltip ~= GameTooltip or IsForbidden(tooltip) then
+		return
+	end
+
+	if module:IsRestrictedInstanceTooltip(tooltip) and not GetBlizzardUnitFrameUnit(owner) then
 		return
 	end
 
@@ -1291,6 +1646,32 @@ local function GetFontStringHeightSafe(fontString)
 	return 0
 end
 
+function module:GetFontStringDisplayWidth(fontString)
+	local regionWidth = 0
+	local stringWidth = GetFontStringWidthSafe(fontString) or 0
+
+	if fontString and type(fontString.GetWidth) == "function" and not IsForbidden(fontString) then
+		local ok, width = pcall(fontString.GetWidth, fontString)
+		if ok and not IsSecretValue(width) and type(width) == "number" then
+			regionWidth = width
+		end
+	end
+
+	if stringWidth <= 1 then
+		local text = GetFontStringTextSafe(fontString)
+		if text and text ~= "" and type(text) == "string" then
+			text = text:gsub("|cff%x%x%x%x%x%x", ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+			stringWidth = max(stringWidth, (#text * 7) + 4)
+		end
+	end
+
+	if stringWidth > 1 and (regionWidth <= 1 or stringWidth > regionWidth) then
+		return stringWidth
+	end
+
+	return regionWidth
+end
+
 local function GetRegionLeftSafe(region)
 	if region and type(region.GetLeft) == "function" and not IsForbidden(region) then
 		local ok, left = pcall(region.GetLeft, region)
@@ -1407,6 +1788,43 @@ local function ClearTooltipLine(tooltip, index)
 	end
 end
 
+function module:RestoreTooltipLineFromData(tooltip, index)
+	local data = GetTooltipDataSafe(tooltip)
+	local line = data and type(data.lines) == "table" and data.lines[index]
+	if not line then
+		return
+	end
+
+	local leftText = not IsSecretValue(line.leftText) and line.leftText or nil
+	local rightText = not IsSecretValue(line.rightText) and line.rightText or nil
+	local left = GetTooltipLine(tooltip, "Left", index)
+	local right = GetTooltipLine(tooltip, "Right", index)
+	local alpha = index == 1 and ((module.db and module.db.titleTextAlpha) or 1) or ((module.db and module.db.textAlpha) or 1)
+
+	if left and leftText then
+		SetFontStringTextSafe(left, leftText)
+		ShowFontStringSafe(left)
+		module:SetFontStringVisualAlpha(left, alpha)
+	end
+
+	if right and rightText then
+		SetFontStringTextSafe(right, rightText)
+		ShowFontStringSafe(right)
+		module:SetFontStringVisualAlpha(right, alpha)
+	end
+end
+
+function module:RestoreTooltipLinesFromData(tooltip)
+	local data = GetTooltipDataSafe(tooltip)
+	if not data or type(data.lines) ~= "table" then
+		return
+	end
+
+	for index = 1, #data.lines do
+		self:RestoreTooltipLineFromData(tooltip, index)
+	end
+end
+
 local function ReplaceTooltipLineLeft(tooltip, index, text, r, g, b)
 	local left = GetTooltipLine(tooltip, "Left", index)
 	if not left then
@@ -1433,14 +1851,8 @@ local function ReplaceTooltipLineRight(tooltip, index, text, r, g, b)
 	end
 
 	if text and text ~= "" then
-		local left = GetTooltipLine(tooltip, "Left", index)
 		if type(right.SetJustifyH) == "function" then
 			pcall(right.SetJustifyH, right, "RIGHT")
-		end
-		if left and type(right.ClearAllPoints) == "function" and type(right.SetPoint) == "function" and not IsForbidden(left) then
-			pcall(right.ClearAllPoints, right)
-			pcall(right.SetPoint, right, "RIGHT", tooltip, "RIGHT", -8, 0)
-			pcall(right.SetPoint, right, "TOP", left, "TOP", 0, 0)
 		end
 	end
 
@@ -1499,6 +1911,16 @@ local function GetSafeTooltipDataLineText(tooltip, index)
 	end
 
 	if line.type and line.type ~= KNOWN_TOOLTIP_LINE_TYPES.None and line.type ~= KNOWN_TOOLTIP_LINE_TYPES.Blank then
+		return nil
+	end
+
+	return line.leftText
+end
+
+function module:GetTooltipDataLineLeftText(tooltip, index)
+	local data = GetTooltipDataSafe(tooltip)
+	local line = data and type(data.lines) == "table" and data.lines[index]
+	if not line or IsSecretValue(line.leftText) then
 		return nil
 	end
 
@@ -1636,26 +2058,55 @@ local function IsPlayerPvPText(text)
 	return text == (_G.PVP or "PvP") or text == "PvP"
 end
 
-local function IsPlayerMountLine(tooltip, index)
-	local left = GetTooltipLine(tooltip, "Left", index)
-	local text = GetFontStringTextSafe(left)
+local function IsPlayerSocialStatusText(text)
 	if not text then
 		return false
 	end
 
-	local mountText = _G.MOUNT or "Mount"
-	return text == mountText .. ":" or text == mountText
+	text = strgsub(text, "|c%x%x%x%x%x%x%x%x", "")
+	text = strgsub(text, "|r", "")
+	text = strgsub(text, "|T.-|t", "")
+	text = strmatch(text, "^%s*(.-)%s*$") or text
+	return text == "Recent Allies" or text == "Recent Ally" or strfind(text, "Recent Allies", 1, true) ~= nil
+end
+
+local function ClearPlayerSocialStatusLines(tooltip)
+	for index = 2, GetTooltipLineCount(tooltip) do
+		local text = GetFontStringTextSafe(GetTooltipLine(tooltip, "Left", index)) or GetSafeTooltipDataLineText(tooltip, index)
+		if IsPlayerSocialStatusText(text) then
+			ClearTooltipLine(tooltip, index)
+		end
+	end
+end
+
+local function IsPlayerMountLine(tooltip, index)
+	local left = GetTooltipLine(tooltip, "Left", index)
+	local text = module:NormalizeTooltipLabelText(GetFontStringTextSafe(left) or GetSafeTooltipDataLineText(tooltip, index))
+	if not text then
+		return false
+	end
+
+	local mountText = module:NormalizeTooltipLabelText(_G.MOUNT or "Mount")
+	local mountColonText = module:NormalizeTooltipLabelText(_G.MOUNT_COLON or (mountText and (mountText .. ":")))
+	local mountPattern = module:EscapePatternText(mountText)
+	return text == mountText
+		or text == mountColonText
+		or (mountPattern and strfind(text, "^" .. mountPattern .. "%s*:", 1, false) ~= nil)
 end
 
 local function IsPlayerTargetLine(tooltip, index)
 	local left = GetTooltipLine(tooltip, "Left", index)
-	local text = GetFontStringTextSafe(left)
+	local text = module:NormalizeTooltipLabelText(GetFontStringTextSafe(left) or GetSafeTooltipDataLineText(tooltip, index))
 	if not text then
 		return false
 	end
 
-	local targetText = _G.TARGET or "Target"
-	return text == targetText .. ":" or text == targetText
+	local targetText = module:NormalizeTooltipLabelText(_G.TARGET or "Target")
+	local targetColonText = module:NormalizeTooltipLabelText(_G.TARGET_COLON or (targetText and (targetText .. ":")))
+	local targetPattern = module:EscapePatternText(targetText)
+	return text == targetText
+		or text == targetColonText
+		or (targetPattern and strfind(text, "^" .. targetPattern .. "%s*:", 1, false) ~= nil)
 end
 
 function module:GetTooltipTargetLine(tooltip)
@@ -1705,13 +2156,17 @@ end
 
 function module:IsPlayerRoleLine(tooltip, index)
 	local left = GetTooltipLine(tooltip, "Left", index)
-	local text = GetFontStringTextSafe(left)
+	local text = self:NormalizeTooltipLabelText(GetFontStringTextSafe(left) or GetSafeTooltipDataLineText(tooltip, index))
 	if not text then
 		return false
 	end
 
-	local roleText = _G.ROLE or "Role"
-	return text == roleText .. ":" or text == roleText
+	local roleText = self:NormalizeTooltipLabelText(_G.ROLE or "Role")
+	local roleColonText = self:NormalizeTooltipLabelText(_G.ROLE_COLON or (roleText and (roleText .. ":")))
+	local rolePattern = self:EscapePatternText(roleText)
+	return text == roleText
+		or text == roleColonText
+		or (rolePattern and strfind(text, "^" .. rolePattern .. "%s*:", 1, false) ~= nil)
 end
 
 function module:GetUnitThreatPercent(context)
@@ -1743,7 +2198,7 @@ function module:ApplyThreatPercentToInfoLine(tooltip, context, infoIndex)
 	end
 
 	local showFullDetails = IsDetailsOverrideForContext(context)
-	local hideThreat = not showFullDetails and context.unitKind == "npc" and db.hideNPCThreat
+	local hideThreat = not showFullDetails and self:IsNPCStyleUnit(context) and db.hideNPCThreat
 	if hideThreat then
 		if threatIndex then
 			ClearTooltipLine(tooltip, threatIndex)
@@ -1809,7 +2264,7 @@ function module:ApplyTargetNameToNameLine(tooltip, context, nameIndex)
 		return
 	end
 
-	if context.unitKind ~= "player" and context.unitKind ~= "npc" then
+	if context.unitKind ~= "player" and not self:IsNPCStyleUnit(context) then
 		return
 	end
 
@@ -1823,7 +2278,7 @@ function module:ApplyTargetNameToNameLine(tooltip, context, nameIndex)
 
 	local showFullDetails = IsDetailsOverrideForContext(context)
 	local hideTarget = not showFullDetails
-		and ((context.unitKind == "player" and db.hidePlayerTarget) or (context.unitKind == "npc" and db.hideNPCTarget))
+		and ((context.unitKind == "player" and db.hidePlayerTarget) or (self:IsNPCStyleUnit(context) and db.hideNPCTarget))
 	if hideTarget then
 		if targetIndex then
 			ClearTooltipLine(tooltip, targetIndex)
@@ -1840,7 +2295,7 @@ function module:ApplyTargetNameToNameLine(tooltip, context, nameIndex)
 		return
 	end
 
-	nameText = strmatch(nameText, "^(.-)%s+=>%s+.*$") or nameText
+	nameText = strmatch(nameText, "^(.-)%s+=>%s+.*$") or strmatch(nameText, "^(.-)%s+|cff%x%x%x%x%x%x%-%>|r%s+.*$") or strmatch(nameText, "^(.-)%s+|cff%x%x%x%x%x%x➜|r%s+.*$") or nameText
 
 	local nameR, nameG, nameB = GetUnitNameColor(context)
 	if not nameR or not nameG or not nameB then
@@ -1849,11 +2304,11 @@ function module:ApplyTargetNameToNameLine(tooltip, context, nameIndex)
 
 	SetFontStringTextSafe(
 		nameLine,
-		WrapColorText(nameText, nameR or 1, nameG or 1, nameB or 1) .. " => " .. WrapColorText(targetText, targetR, targetG, targetB)
+		WrapColorText(nameText, nameR or 1, nameG or 1, nameB or 1) .. " " .. WrapColorText("->", 0.95, 0.25, 0.22) .. " " .. WrapColorText(targetText, targetR, targetG, targetB)
 	)
 	SetFontStringColorSafe(nameLine, 1, 1, 1, 1)
 	ShowFontStringSafe(nameLine)
-	SetRegionAlpha(nameLine, db.textAlpha or 1)
+	self:SetFontStringVisualAlpha(nameLine, db.titleTextAlpha or 1)
 	ReplaceTooltipLineRight(tooltip, nameIndex, nil)
 	if targetIndex then
 		ClearTooltipLine(tooltip, targetIndex)
@@ -1875,11 +2330,13 @@ end
 local function GetPlayerLineIndexes(tooltip, context)
 	local indexes = {}
 	local mythicIndexes = {}
+	local socialIndexes = {}
 	local unitClass = context and context.unitClass
 	local levelIndex
 
 	for index = 2, GetTooltipLineCount(tooltip) do
 		local text = GetSafeTooltipDataLineText(tooltip, index)
+		local renderedText = GetFontStringTextSafe(GetTooltipLine(tooltip, "Left", index))
 		if not indexes.mount and IsPlayerMountLine(tooltip, index) then
 			indexes.mount = index
 		end
@@ -1892,6 +2349,9 @@ local function GetPlayerLineIndexes(tooltip, context)
 		if IsPlayerMythicLine(tooltip, index) then
 			tinsert(mythicIndexes, index)
 		end
+		if IsPlayerSocialStatusText(renderedText) then
+			tinsert(socialIndexes, index)
+		end
 
 		if text then
 			if not indexes.levelRace and IsPlayerLevelRaceText(text) then
@@ -1903,6 +2363,8 @@ local function GetPlayerLineIndexes(tooltip, context)
 				indexes.faction = index
 			elseif not indexes.pvp and IsPlayerPvPText(text) then
 				indexes.pvp = index
+			elseif not IsPlayerSocialStatusText(renderedText) and IsPlayerSocialStatusText(text) then
+				tinsert(socialIndexes, index)
 			end
 		end
 	end
@@ -1918,6 +2380,7 @@ local function GetPlayerLineIndexes(tooltip, context)
 	end
 
 	indexes.mythic = mythicIndexes
+	indexes.social = socialIndexes
 
 	return indexes
 end
@@ -1937,9 +2400,9 @@ local function ApplyPlayerLineFilters(tooltip, context)
 	local indexes = GetPlayerLineIndexes(tooltip, context)
 	if db.hidePlayerRealm and indexes.guild then StripRealmFromLine(tooltip, indexes.guild) end
 	if db.hidePlayerGuild and indexes.guild then HideOptionalLine(tooltip, indexes.guild) end
-	if indexes.levelRace and (db.hidePlayerLevelRace or db.hidePlayerLevel or db.hidePlayerRace) then
-		local showLevel = not (db.hidePlayerLevelRace or db.hidePlayerLevel)
-		local showRace = not (db.hidePlayerLevelRace or db.hidePlayerRace)
+	if indexes.levelRace and (db.hidePlayerLevel or db.hidePlayerRace) then
+		local showLevel = not db.hidePlayerLevel
+		local showRace = not db.hidePlayerRace
 		local levelText, raceText = GetPlayerInfoParts(context, showLevel, showRace)
 		local text
 
@@ -1955,6 +2418,9 @@ local function ApplyPlayerLineFilters(tooltip, context)
 	if db.hidePlayerClass and indexes.class then HideOptionalLine(tooltip, indexes.class) end
 	if db.hidePlayerFaction and indexes.faction then HideOptionalLine(tooltip, indexes.faction) end
 	if db.hidePlayerPvP and indexes.pvp then HideOptionalLine(tooltip, indexes.pvp) end
+	if db.hidePlayerSocialStatus then
+		ClearPlayerSocialStatusLines(tooltip)
+	end
 	if db.hidePlayerMount and indexes.mount then HideOptionalLine(tooltip, indexes.mount) end
 	if db.hidePlayerTarget and indexes.target then ClearTooltipLine(tooltip, indexes.target) end
 	if db.hidePlayerRole and indexes.role then ClearTooltipLine(tooltip, indexes.role) end
@@ -2037,6 +2503,122 @@ function module:ApplyInstanceSecretUnitLineFilters(tooltip)
 	end
 end
 
+function module:IsSafeMouseoverLevelUnit()
+	if not UnitExistsSafe("mouseover") then
+		return false
+	end
+
+	if UnitBoolSafe(UnitIsGameObject, "mouseover") then
+		return false
+	end
+
+	if UnitBoolSafe(UnitIsPlayer, "mouseover")
+		or UnitBoolSafe(UnitCanAttack, "player", "mouseover")
+		or UnitBoolSafe(UnitCanAssist, "player", "mouseover")
+	then
+		return true
+	end
+
+	local reaction = UnitNumberSafe(UnitReaction, "mouseover", "player")
+	return reaction and reaction >= 5
+end
+
+local function GetSafeMouseoverLevelText()
+	if not module:IsSafeMouseoverLevelUnit() then
+		return nil
+	end
+
+	local level = UnitNumberSafe(UnitEffectiveLevel, "mouseover") or UnitNumberSafe(UnitLevel, "mouseover")
+	if type(level) ~= "number" then
+		return nil
+	end
+
+	if level == -1 then
+		return "??", 1, 0.15, 0.15
+	elseif level > 0 then
+		return tostring(level), 1, 0.82, 0
+	end
+end
+
+local function HideSecureInstanceLevelText(tooltip)
+	local levelText = tooltip and tooltip.hoverToolTipSecureInstanceLevel
+	if not levelText then
+		return
+	end
+
+	SetRegionAlpha(levelText, 0)
+	SafeCall(levelText, "SetText", "")
+	SafeCall(levelText, "Hide")
+end
+
+function module:IsCurrentSecretUnitTooltipData(tooltip)
+	local data = GetTooltipDataSafe(tooltip)
+	local firstLine = data and data.type == TOOLTIP_DATA_TYPE_UNIT and type(data.lines) == "table" and data.lines[1]
+	return firstLine and IsSecretValue(firstLine.leftText) == true
+end
+
+function module:ApplySecureInstanceSecretUnitStyle(tooltip)
+	HideSecureInstanceLevelText(tooltip)
+
+	local db = self.db
+	if not db or not db.secureInstanceStyling or not tooltip or IsDetailsOverrideActive() then
+		return
+	end
+
+	local data = GetTooltipDataSafe(tooltip)
+	if not data or data.type ~= TOOLTIP_DATA_TYPE_UNIT or type(data.lines) ~= "table" then
+		return
+	end
+
+	local firstLine = data.lines[1]
+	if not firstLine or not IsSecretValue(firstLine.leftText) then
+		return
+	end
+
+	if #data.lines < 2 then
+		return
+	end
+
+	local levelTextValue, levelR, levelG, levelB = GetSafeMouseoverLevelText()
+	if not levelTextValue then
+		HideSecureInstanceLevelText(tooltip)
+		return
+	end
+
+	local count = GetTooltipLineCount(tooltip)
+	for index = 2, count do
+		local left = GetTooltipLine(tooltip, "Left", index)
+		local right = GetTooltipLine(tooltip, "Right", index)
+		ShowFontStringSafe(left)
+		ShowFontStringSafe(right)
+		SetRegionAlpha(left, 0)
+		SetRegionAlpha(right, 0)
+	end
+
+	local levelText = tooltip.hoverToolTipSecureInstanceLevel
+	if not levelText and type(tooltip.CreateFontString) == "function" then
+		levelText = tooltip:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+		tooltip.hoverToolTipSecureInstanceLevel = levelText
+	end
+
+	if not levelText then
+		return
+	end
+
+	levelText:ClearAllPoints()
+	local nameLine = GetTooltipLine(tooltip, "Left", 1)
+	if nameLine then
+		levelText:SetPoint("BOTTOMLEFT", nameLine, "TOPLEFT", 0, 2)
+	else
+		levelText:SetPoint("BOTTOMLEFT", tooltip, "TOPLEFT", 10, 2)
+	end
+	levelText:SetText(levelTextValue)
+	ApplyFont(levelText, db.bodyTextSize or 11, db.bodyTextOutline or "SHADOWOUTLINE")
+	SetFontStringColorSafe(levelText, levelR or 1, levelG or 1, levelB or 1, 1)
+	SetRegionAlpha(levelText, db.textAlpha or 1)
+	ShowFontStringSafe(levelText)
+end
+
 GetUnitInfoLineIndex = function(tooltip, context)
 	if not tooltip or not context then
 		return nil
@@ -2045,7 +2627,7 @@ GetUnitInfoLineIndex = function(tooltip, context)
 	if context.unitKind == "player" then
 		local indexes = GetPlayerLineIndexes(tooltip, context)
 		return indexes.levelRace
-	elseif context.unitKind == "npc" then
+	elseif module:IsNPCStyleUnit(context) then
 		return GetNPCInfoLine(tooltip, context)
 	end
 end
@@ -2214,8 +2796,72 @@ local function GetTooltipDataLineType(tooltip, index)
 	return line and line.type
 end
 
+function module:IsTitleTextLine(tooltip, context, index)
+	if tooltip and tooltip.hoverToolTipInfoAboveNameActive and context and context.isUnit then
+		return index == 2
+	end
+
+	local lineType = GetTooltipDataLineType(tooltip, index)
+	return index == 1 or lineType == KNOWN_TOOLTIP_LINE_TYPES.UnitName
+end
+
 local function IsQuestObjectiveText(text)
 	return text and (strmatch(text, "^%s*%-%s+") or strmatch(text, "^%s*%d+%s*/%s*%d+"))
+end
+
+function module:NormalizeQuestPlayerName(text)
+	if not text then
+		return nil
+	end
+
+	text = strgsub(text, "|c%x%x%x%x%x%x%x%x", "")
+	text = strgsub(text, "|r", "")
+	text = strmatch(text, "^%s*(.-)%s*$") or text
+	text = StripRealmSuffix(text)
+	return strlower(text)
+end
+
+function module:IsOwnQuestPlayerText(text)
+	local playerName = UnitStringSafe(UnitName, "player")
+	if not playerName then
+		return false
+	end
+
+	local normalizedText = self:NormalizeQuestPlayerName(text)
+	if not normalizedText then
+		return false
+	end
+
+	local normalizedPlayerName = self:NormalizeQuestPlayerName(playerName)
+	if normalizedText == normalizedPlayerName then
+		return true
+	end
+
+	local fullName = UnitFullNameSafe("player")
+	return fullName and normalizedText == self:NormalizeQuestPlayerName(fullName)
+end
+
+function module:IsOwnQuestObjectiveLine(tooltip, index)
+	if not self.db or not self.db.hideOwnQuestPlayer then
+		return false
+	end
+
+	local lineType = GetTooltipDataLineType(tooltip, index)
+	local text = GetSafeTooltipDataLineText(tooltip, index)
+	if lineType ~= LINE_TYPE_QUEST_OBJECTIVE and not IsQuestObjectiveText(text) then
+		return false
+	end
+
+	for previousIndex = index - 1, 2, -1 do
+		local previousType = GetTooltipDataLineType(tooltip, previousIndex)
+		if previousType == LINE_TYPE_QUEST_PLAYER then
+			return self:IsOwnQuestPlayerText(self:GetTooltipDataLineLeftText(tooltip, previousIndex))
+		elseif previousType ~= LINE_TYPE_QUEST_OBJECTIVE then
+			return false
+		end
+	end
+
+	return false
 end
 
 local function ShouldKeepQuestLikeLine(tooltip, index)
@@ -2226,16 +2872,17 @@ local function ShouldKeepQuestLikeLine(tooltip, index)
 
 	local lineType = GetTooltipDataLineType(tooltip, index)
 	if lineType == LINE_TYPE_QUEST_OBJECTIVE then
-		return not db.hideQuestObjectives
+		return not db.hideQuestObjectives or module:IsOwnQuestObjectiveLine(tooltip, index)
 	elseif lineType == LINE_TYPE_QUEST_TITLE then
 		return not db.hideQuestTitles
 	elseif lineType == LINE_TYPE_QUEST_PLAYER then
 		return not db.hideQuestPlayers
+			or (not db.hideOwnQuestPlayer and module:IsOwnQuestPlayerText(module:GetTooltipDataLineLeftText(tooltip, index)))
 	end
 
 	local text = GetSafeTooltipDataLineText(tooltip, index)
 	if IsQuestObjectiveText(text) then
-		return not db.hideQuestObjectives
+		return not db.hideQuestObjectives or module:IsOwnQuestObjectiveLine(tooltip, index)
 	end
 
 	local nextText = GetSafeTooltipDataLineText(tooltip, index + 1)
@@ -2259,15 +2906,32 @@ function module:ApplyQuestLineFilters(tooltip)
 	for index = 2, GetTooltipLineCount(tooltip) do
 		local lineType = GetTooltipDataLineType(tooltip, index)
 		if lineType == LINE_TYPE_QUEST_OBJECTIVE and db.hideQuestObjectives then
-			ClearTooltipLine(tooltip, index)
+			if not self:IsOwnQuestObjectiveLine(tooltip, index) then
+				ClearTooltipLine(tooltip, index)
+			end
 		elseif lineType == LINE_TYPE_QUEST_TITLE and db.hideQuestTitles then
 			ClearTooltipLine(tooltip, index)
 		elseif lineType == LINE_TYPE_QUEST_PLAYER and db.hideQuestPlayers then
-			ClearTooltipLine(tooltip, index)
+			local playerText = self:GetTooltipDataLineLeftText(tooltip, index)
+			local isOwnQuestPlayer = self:IsOwnQuestPlayerText(playerText)
+			if db.hideOwnQuestPlayer and isOwnQuestPlayer then
+				ClearTooltipLine(tooltip, index)
+			elseif not isOwnQuestPlayer then
+				ClearTooltipLine(tooltip, index)
+				local nextIndex = index + 1
+				local nextType = GetTooltipDataLineType(tooltip, nextIndex)
+				local nextText = GetSafeTooltipDataLineText(tooltip, nextIndex)
+				while nextType == LINE_TYPE_QUEST_OBJECTIVE or IsQuestObjectiveText(nextText) do
+					ClearTooltipLine(tooltip, nextIndex)
+					nextIndex = nextIndex + 1
+					nextType = GetTooltipDataLineType(tooltip, nextIndex)
+					nextText = GetSafeTooltipDataLineText(tooltip, nextIndex)
+				end
+			end
 		else
 			local text = GetSafeTooltipDataLineText(tooltip, index)
 			local nextText = GetSafeTooltipDataLineText(tooltip, index + 1)
-			if db.hideQuestObjectives and IsQuestObjectiveText(text) then
+			if db.hideQuestObjectives and IsQuestObjectiveText(text) and not self:IsOwnQuestObjectiveLine(tooltip, index) then
 				ClearTooltipLine(tooltip, index)
 			elseif db.hideQuestTitles and IsQuestObjectiveText(nextText) then
 				ClearTooltipLine(tooltip, index)
@@ -2405,7 +3069,23 @@ end
 
 function module:ApplyManualLineFilters(tooltip, context)
 	local db = self.db
-	if not db or not tooltip or not context or not context.shouldStyleTooltip or not context.isUnit then
+	if not db or not tooltip or not context or not context.shouldStyleTooltip then
+		return
+	end
+
+	if context.isObject then
+		if IsDetailsOverrideActive() then
+			self:RestoreTooltipLinesFromData(tooltip)
+			return
+		end
+
+		if not context.inInstance then
+			self:ApplyQuestLineFilters(tooltip)
+		end
+		return
+	end
+
+	if not context.isUnit then
 		return
 	end
 
@@ -2417,7 +3097,7 @@ function module:ApplyManualLineFilters(tooltip, context)
 
 	if context.unitKind == "player" then
 		ApplyPlayerLineFilters(tooltip, context)
-	elseif context.unitKind == "npc" then
+	elseif self:IsNPCStyleUnit(context) then
 		ApplyNPCLineFilters(tooltip, context)
 	end
 end
@@ -2431,13 +3111,20 @@ local function ApplyUnitInfoAboveNameSides(tooltip, context, levelText)
 	local showFullDetails = IsDetailsOverrideForContext(context)
 
 	if context.unitKind == "player" then
-		local showLevel = showFullDetails or not (db.hidePlayerLevelRace or db.hidePlayerLevel)
-		local showRace = showFullDetails or not (db.hidePlayerLevelRace or db.hidePlayerRace)
+		local showLevel = showFullDetails or not db.hidePlayerLevel
+		local showRace = showFullDetails or not db.hidePlayerRace
 		local levelSide, raceSide = GetPlayerInfoParts(context, showLevel, showRace)
+		local leftSide
 
-		ReplaceTooltipLineLeft(tooltip, 1, levelSide, 1, 1, 1)
-		ReplaceTooltipLineRight(tooltip, 1, raceSide, 1, 1, 1)
-	elseif context.unitKind == "npc" then
+		if levelSide and raceSide then
+			leftSide = levelSide .. " " .. raceSide
+		else
+			leftSide = levelSide or raceSide
+		end
+
+		ReplaceTooltipLineLeft(tooltip, 1, leftSide, 1, 1, 1)
+		ReplaceTooltipLineRight(tooltip, 1, nil)
+	elseif module:IsNPCStyleUnit(context) then
 		local leftSide, rightSide = BuildNPCInfoSides(
 			context,
 			levelText,
@@ -2452,6 +3139,28 @@ local function ApplyUnitInfoAboveNameSides(tooltip, context, levelText)
 	end
 end
 
+local function ClearDuplicateNPCInfoAboveNameLines(tooltip, context)
+	if not tooltip or not context or not module:IsNPCStyleUnit(context) then
+		return
+	end
+
+	local creatureType = context.unitCreatureType
+	local levelPrefix = _G.LEVEL or "Level"
+
+	for index = 3, GetTooltipLineCount(tooltip) do
+		local text = GetFontStringTextSafe(GetTooltipLine(tooltip, "Left", index))
+		if text
+			and text ~= ""
+			and (
+				(creatureType and text == creatureType)
+				or strmatch(text, "^" .. levelPrefix .. "%s+")
+			)
+		then
+			ClearTooltipLine(tooltip, index)
+		end
+	end
+end
+
 function module:ApplyUnitInfoPosition(tooltip, context)
 	local db = self.db
 	if not db or not db.unitInfoAboveName or not tooltip or not context or not context.isUnit then
@@ -2462,7 +3171,7 @@ function module:ApplyUnitInfoPosition(tooltip, context)
 		return
 	end
 
-	if context.unitKind ~= "player" and context.unitKind ~= "npc" then
+	if context.unitKind ~= "player" and not self:IsNPCStyleUnit(context) then
 		return
 	end
 
@@ -2473,7 +3182,7 @@ function module:ApplyUnitInfoPosition(tooltip, context)
 
 	local data = GetTooltipDataSafe(tooltip)
 	local levelText
-	if context.unitKind == "npc" then
+	if self:IsNPCStyleUnit(context) then
 		_, levelText = GetNPCInfoLine(tooltip, context)
 	end
 
@@ -2492,7 +3201,7 @@ function module:ApplyUnitInfoPosition(tooltip, context)
 
 		if line.type == KNOWN_TOOLTIP_LINE_TYPES.UnitName then
 			leftR, leftG, leftB = GetUnitNameColor(context)
-			leftA = 1
+			leftA = db.titleTextAlpha or 1
 		elseif visibleLeftText == line.leftText then
 			leftR, leftG, leftB, leftA = GetFontStringColorSafe(left)
 		else
@@ -2590,7 +3299,7 @@ function module:ApplyUnitInfoPosition(tooltip, context)
 		if db.hidePlayerGuild and infoIndex > 2 then
 			ClearTooltipLine(tooltip, 3)
 		end
-	elseif context.unitKind == "npc" and db.hideNPCTitle and not IsDetailsOverrideForContext(context) then
+	elseif self:IsNPCStyleUnit(context) and db.hideNPCTitle and not IsDetailsOverrideForContext(context) then
 		for index = 3, infoIndex do
 			ClearTooltipLine(tooltip, index)
 		end
@@ -2599,8 +3308,10 @@ function module:ApplyUnitInfoPosition(tooltip, context)
 	local nameR, nameG, nameB = GetUnitNameColor(context)
 	if nameR and nameG and nameB then
 		SetFontStringColorSafe(GetTooltipLine(tooltip, "Left", 2), nameR, nameG, nameB, 1)
+		self:SetFontStringVisualAlpha(GetTooltipLine(tooltip, "Left", 2), db.titleTextAlpha or 1)
 	end
 	self:ApplyTargetNameToNameLine(tooltip, context, 2)
+	ClearDuplicateNPCInfoAboveNameLines(tooltip, context)
 
 	for index = 3, infoIndex do
 		if GetFontStringTextSafe(GetTooltipLine(tooltip, "Left", index)) then
@@ -2609,6 +3320,7 @@ function module:ApplyUnitInfoPosition(tooltip, context)
 	end
 
 	tooltip.hoverToolTipInfoAboveNameData = data
+	tooltip.hoverToolTipInfoAboveNameActive = true
 end
 
 local function IsVisibleTooltipText(fontString)
@@ -2621,10 +3333,36 @@ local function IsVisibleTooltipText(fontString)
 	return alpha ~= 0 and IsShownSafe(fontString)
 end
 
-local function ResizeTooltipToVisibleText(tooltip, context)
-	if not tooltip or IsForbidden(tooltip) or not context or not IsVisualLayoutAllowed(context) then
+function module:CollapseEmptyRightTextLines(tooltip)
+	if not tooltip or IsForbidden(tooltip) then
 		return
 	end
+
+	local shouldModify, context = module:ShouldModifyTooltip(tooltip)
+	if not shouldModify or not context or not IsVisualLayoutAllowed(context) then
+		return
+	end
+
+	for index = 1, GetTooltipLineCount(tooltip) do
+		local right = GetTooltipLine(tooltip, "Right", index)
+		if right and IsVisibleTooltipText(right) then
+			if type(right.SetJustifyH) == "function" then
+				pcall(right.SetJustifyH, right, "RIGHT")
+			end
+		elseif right then
+			SetFontStringTextSafe(right, "")
+			ShowFontStringSafe(right)
+			SetRegionAlpha(right, 0)
+		end
+	end
+end
+
+function module:ApplyVisibleTextTooltipSize(tooltip, context)
+	if not tooltip or IsForbidden(tooltip) or not context or not IsVisualLayoutAllowed(context) then
+		return false
+	end
+
+	module:CollapseEmptyRightTextLines(tooltip)
 
 	local lineCount = GetTooltipLineCount(tooltip)
 	local tooltipLeft = GetRegionLeftSafe(tooltip) or 0
@@ -2645,8 +3383,10 @@ local function ResizeTooltipToVisibleText(tooltip, context)
 
 		if leftVisible or rightVisible then
 			local leftOffset = leftVisible and max((GetRegionLeftSafe(left) or tooltipLeft + leftPadding) - tooltipLeft, leftPadding) or leftPadding
-			local leftWidth = leftVisible and GetFontStringWidthSafe(left) or 0
-			local rightWidth = rightVisible and GetFontStringWidthSafe(right) or 0
+			local leftWidth = leftVisible and (module:GetFontStringDisplayWidth(left) or 0) or 0
+			local rightWidth = rightVisible and (module:GetFontStringDisplayWidth(right) or 0) or 0
+			local leftHeight = leftVisible and (GetRegionHeightSafe(left) or GetFontStringHeightSafe(left)) or 0
+			local rightHeight = rightVisible and (GetRegionHeightSafe(right) or GetFontStringHeightSafe(right)) or 0
 			local lineWidth = leftOffset + leftWidth
 
 			if rightWidth > 0 then
@@ -2654,13 +3394,13 @@ local function ResizeTooltipToVisibleText(tooltip, context)
 			end
 
 			maxLineWidth = max(maxLineWidth, lineWidth)
-			totalTextHeight = totalTextHeight + max(GetFontStringHeightSafe(left), GetFontStringHeightSafe(right), 1)
+			totalTextHeight = totalTextHeight + max(leftHeight, rightHeight, 1)
 			visibleRows = visibleRows + 1
 		end
 	end
 
 	if visibleRows == 0 or maxLineWidth == 0 then
-		return
+		return false
 	end
 
 	local width = maxLineWidth + rightPadding
@@ -2671,7 +3411,7 @@ local function ResizeTooltipToVisibleText(tooltip, context)
 	end
 
 	if type(tooltip.SetMinimumWidth) == "function" then
-		pcall(tooltip.SetMinimumWidth, tooltip, 0)
+		pcall(tooltip.SetMinimumWidth, tooltip, width)
 	end
 
 	if type(tooltip.SetWidth) == "function" then
@@ -2680,6 +3420,38 @@ local function ResizeTooltipToVisibleText(tooltip, context)
 
 	if type(tooltip.SetHeight) == "function" then
 		pcall(tooltip.SetHeight, tooltip, height)
+	end
+
+	tooltip.hoverToolTipResizedToVisibleText = true
+	if context.isObject then
+		tooltip.hoverToolTipVisibleWidth = width
+		tooltip.hoverToolTipVisibleHeight = height
+	end
+
+	return true
+end
+
+function module:QueueVisibleTextTooltipResize(tooltip, context)
+	if not tooltip or IsForbidden(tooltip) or tooltip.hoverToolTipResizeQueued then
+		return
+	end
+
+	if not context or not context.isObject or not C_Timer or type(C_Timer.After) ~= "function" then
+		return
+	end
+
+	tooltip.hoverToolTipResizeQueued = true
+	C_Timer.After(0, function()
+		if tooltip and not IsForbidden(tooltip) then
+			tooltip.hoverToolTipResizeQueued = nil
+			module:ApplyVisibleTextTooltipSize(tooltip, context)
+		end
+	end)
+end
+
+local function ResizeTooltipToVisibleText(tooltip, context)
+	if module:ApplyVisibleTextTooltipSize(tooltip, context) then
+		module:QueueVisibleTextTooltipResize(tooltip, context)
 	end
 end
 
@@ -2696,7 +3468,7 @@ function module:HideInstanceTooltip()
 end
 
 function module:ShouldStyleInstanceTooltip(tooltip)
-	if not self:IsRestrictedInstanceTooltip(tooltip) then
+	if not self:ShouldUseRestrictedInstancePath(tooltip) then
 		return false
 	end
 
@@ -2706,6 +3478,11 @@ end
 
 function module:StyleInstanceTooltip(tooltip, maintainOnly)
 	local db = self.db
+	if self.disabledByMerathilisHoverToolTip or self:ShouldStandDownForMerathilis() then
+		self.disabledByMerathilisHoverToolTip = true
+		return false
+	end
+
 	if not db or not db.enable or not tooltip or tooltip ~= GameTooltip or IsForbidden(tooltip) then
 		return false
 	end
@@ -2717,12 +3494,23 @@ function module:StyleInstanceTooltip(tooltip, maintainOnly)
 		return false
 	end
 
+	if IsDetailsOverrideActive() then
+		ReleaseTooltipState(tooltip)
+		HideSecureInstanceLevelText(tooltip)
+	end
+
+	local instanceDB = self:CopyTable(db, {})
+	instanceDB.customTooltipBackdrop = false
 	StoreOriginalTooltipState(tooltip)
 	SafeCall(tooltip, "SetScale", db.scale or 1)
-	SetTooltipBackdropAlpha(tooltip, db)
+	SetTooltipBackdropAlpha(tooltip, instanceDB)
 	self:ApplyTextStyle(tooltip, { isObject = false })
 	self:ApplyInstancePlayerLineFilters(tooltip)
+	self:ApplySecureInstanceSecretUnitStyle(tooltip)
 	self:ApplyInstanceSecretUnitLineFilters(tooltip)
+	if not self:IsCurrentSecretUnitTooltipData(tooltip) then
+		HideSecureInstanceLevelText(tooltip)
+	end
 
 	if tooltip.StatusBar then
 		SetRegionAlpha(tooltip.StatusBar, db.statusBar and 1 or 0)
@@ -2755,7 +3543,7 @@ function module:QueueInstanceStyleTooltip(tooltip)
 	tooltip.hoverToolTipInstanceStyleQueued = true
 	C_Timer.After(0, function()
 		tooltip.hoverToolTipInstanceStyleQueued = nil
-		if tooltip and not IsForbidden(tooltip) and IsShownSafe(tooltip) and module:IsRestrictedInstanceTooltip(tooltip) then
+		if tooltip and not IsForbidden(tooltip) and IsShownSafe(tooltip) and module:ShouldUseRestrictedInstancePath(tooltip) then
 			module:StyleInstanceTooltip(tooltip)
 		end
 	end)
@@ -2781,16 +3569,12 @@ IsDetailsOverrideActive = function()
 end
 
 IsDetailsOverrideForContext = function(context)
-	if not IsDetailsOverrideActive() then
-		return false
-	end
-
 	local db = module.db
-	if context and context.isUnitFrameTooltip and db and db.detailsOnUnitFrames == false then
-		return false
+	if context and context.isUnitFrameTooltip and db and db.detailsOnUnitFrames == true then
+		return true
 	end
 
-	return true
+	return IsDetailsOverrideActive()
 end
 
 IsDataModificationAllowed = function(context)
@@ -2798,10 +3582,10 @@ IsDataModificationAllowed = function(context)
 		return false, "not-unit-tooltip"
 	elseif context.unitIsSecret then
 		return false, "secret-unit"
-	elseif context.inInstance then
-		return false, "instance"
 	elseif IsDetailsOverrideForContext(context) then
 		return false, "full-details"
+	elseif context.inInstance and not (context.isUnitFrameTooltip and context.unitKind == "player") then
+		return false, "instance"
 	end
 
 	return true, "allowed"
@@ -2816,20 +3600,30 @@ IsVisualLayoutAllowed = function(context)
 		return false, "not-unit-tooltip"
 	elseif context.unitIsSecret then
 		return false, "secret-unit"
-	elseif context.inInstance then
+	elseif context.inInstance and not (context.isUnitFrameTooltip and context.unitKind == "player") then
 		return false, "instance"
 	end
 
 	return true, "allowed"
 end
 
-local function RefreshTooltipData(tooltip)
-	if tooltip and type(tooltip.RefreshData) == "function" and not IsForbidden(tooltip) then
+local function IsTooltipDataRefreshSafe(context)
+	if not context or not context.isUnit or context.unitIsSecret then
+		return false
+	elseif context.inInstance and not (context.isUnitFrameTooltip and context.unitKind == "player") then
+		return false
+	end
+
+	return true
+end
+
+local function RefreshTooltipData(tooltip, context)
+	if tooltip and type(tooltip.RefreshData) == "function" and not IsForbidden(tooltip) and IsTooltipDataRefreshSafe(context) then
 		pcall(tooltip.RefreshData, tooltip)
 	end
 end
 
-local function QueueTooltipLayoutRefresh(tooltip)
+local function QueueTooltipLayoutRefresh(tooltip, context)
 	if not tooltip or IsForbidden(tooltip) or tooltip.hoverToolTipLayoutRefreshed or tooltip.hoverToolTipLayoutRefreshQueued then
 		return
 	end
@@ -2850,7 +3644,8 @@ local function QueueTooltipLayoutRefresh(tooltip)
 		tooltip.hoverToolTipLayoutRefreshed = true
 		SuppressTooltipUntilStyled(tooltip)
 		tooltip.hoverToolTipRefreshing = true
-		RefreshTooltipData(tooltip)
+		context = module:GetTooltipContext(tooltip)
+		RefreshTooltipData(tooltip, context)
 		tooltip.hoverToolTipRefreshing = nil
 		module:StyleTooltip(tooltip, true)
 	end)
@@ -2952,6 +3747,83 @@ end
 
 local function GetTooltipDataTypeName(dataType)
 	return (dataType and TOOLTIP_DATA_TYPE_NAMES[dataType]) or SafeText(dataType)
+end
+
+function module:ShowDebugOutput(title, text)
+	if not self.debugOutputFrame then
+		local frame = CreateFrame("Frame", "HoverToolTipDebugOutputFrame", UIParent, "BasicFrameTemplateWithInset")
+		frame:SetSize(760, 520)
+		frame:SetPoint("CENTER")
+		frame:SetFrameStrata("DIALOG")
+		frame:Hide()
+		frame:SetMovable(true)
+		frame:EnableMouse(true)
+		frame:RegisterForDrag("LeftButton")
+		frame:SetScript("OnDragStart", frame.StartMoving)
+		frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+
+		frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+		frame.title:SetPoint("LEFT", frame.TitleBg, "LEFT", 8, 0)
+
+		local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
+		scroll:SetPoint("TOPLEFT", 12, -34)
+		scroll:SetPoint("BOTTOMRIGHT", -30, 42)
+
+		local editBox = CreateFrame("EditBox", nil, scroll)
+		editBox:SetMultiLine(true)
+		editBox:SetAutoFocus(false)
+		editBox:SetFontObject(ChatFontNormal)
+		editBox:SetWidth(690)
+		editBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+		scroll:SetScrollChild(editBox)
+
+		local close = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+		close:SetSize(90, 24)
+		close:SetPoint("BOTTOMRIGHT", -12, 12)
+		close:SetText("Close")
+		close:SetScript("OnClick", function() frame:Hide() end)
+
+		local selectAll = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+		selectAll:SetSize(90, 24)
+		selectAll:SetPoint("RIGHT", close, "LEFT", -8, 0)
+		selectAll:SetText("Select All")
+		selectAll:SetScript("OnClick", function()
+			editBox:SetFocus()
+			editBox:HighlightText()
+		end)
+
+		frame.scroll = scroll
+		frame.editBox = editBox
+		self.debugOutputFrame = frame
+	end
+
+	local frame = self.debugOutputFrame
+	frame.title:SetText(title or "HoverToolTip Debug")
+	frame.editBox:SetText(text or "")
+	frame.editBox:SetCursorPosition(0)
+	frame.editBox:ClearFocus()
+	frame:Show()
+end
+
+function module:CaptureDebugOutput(title, func)
+	local lines = {}
+	local oldPrint = print
+	print = function(...)
+		local parts = {}
+		for index = 1, select("#", ...) do
+			parts[index] = SafeText(select(index, ...))
+		end
+		tinsert(lines, tconcat(parts, "\t"))
+	end
+
+	local ok, err = pcall(func)
+	print = oldPrint
+
+	if not ok then
+		tinsert(lines, "ERROR: " .. SafeText(err))
+	end
+
+	self:ShowDebugOutput(title, tconcat(lines, "\n"))
 end
 
 local function PrintFrameChain(label, frame)
@@ -3114,6 +3986,18 @@ local function PrintTooltipGeometryDump(tooltip)
 			.. SafeText(GetFrameAlpha(tooltip))
 	)
 	print("  rect=" .. FormatFrameRect(tooltip))
+	if tooltip.hoverToolTipVisibleWidth or tooltip.hoverToolTipVisibleHeight then
+		print(
+			"  visualTarget=w="
+				.. FormatDebugNumber(tooltip.hoverToolTipVisibleWidth)
+				.. " h="
+				.. FormatDebugNumber(tooltip.hoverToolTipVisibleHeight)
+				.. " actual=w="
+				.. FormatDebugNumber(GetRegionWidthSafe(tooltip))
+				.. " h="
+				.. FormatDebugNumber(GetRegionHeightSafe(tooltip))
+		)
+	end
 end
 
 local function PrintTooltipFontStringDump(tooltip)
@@ -3346,12 +4230,12 @@ function module:SetTraceEnabled(enabled)
 		print("HoverToolTip trace: ON. Reproduce the hover/click, then run /httdebug trace stop.")
 	else
 		TraceLog("trace-stop", GameTooltip)
-		print("HoverToolTip trace: OFF. Run /httdebug trace dump to print it.")
+			print("HoverToolTip trace: OFF. Run /httdebug trace dump to print it.")
 	end
 end
 
 function module:RegisterDebugCommand()
-	if self.debugCommandRegistered then
+	if self.debugCommandRegistered and not self.forceCommandRegistration then
 		return
 	end
 
@@ -3363,7 +4247,9 @@ function module:RegisterDebugCommand()
 		elseif traceCommand == "stop" or traceCommand == "off" then
 			module:SetTraceEnabled(false)
 		elseif traceCommand == "dump" or traceCommand == "show" then
-			module:PrintTraceLog()
+			module:CaptureDebugOutput("HoverToolTip Trace Log", function()
+				module:PrintTraceLog()
+			end)
 		elseif traceCommand == "clear" then
 			wipe(module.traceLog)
 			print("HoverToolTip trace log cleared.")
@@ -3377,9 +4263,13 @@ function module:RegisterDebugCommand()
 			wipe(module.debugLog)
 			print("HoverToolTip debug log cleared.")
 		elseif msg == "show" then
-			module:PrintDebugLog()
+			module:CaptureDebugOutput("HoverToolTip Debug Log", function()
+				module:PrintDebugLog()
+			end)
 		elseif msg == "dump" or msg == "snapshot" or msg == "" then
-			module:PrintDebugSnapshot()
+			module:CaptureDebugOutput("HoverToolTip Debug Snapshot", function()
+				module:PrintDebugSnapshot()
+			end)
 		else
 			print("Usage: /httdebug on|off|dump|show|clear")
 			print("Trace: /httdebug trace start|stop|dump|clear")
@@ -3394,18 +4284,22 @@ function module:RegisterDebugCommand()
 end
 
 function module:OpenOptions()
-	local dialog = E and E.Libs and E.Libs.AceConfigDialog
-	if dialog and type(dialog.Open) == "function" then
-		pcall(dialog.Open, dialog, "HoverToolTip")
+	if type(self.ToggleOptionsPanel) == "function" then
+		self:ToggleOptionsPanel()
 	end
 end
 
 function module:RegisterOptionsCommand()
-	if self.optionsCommandRegistered then
+	if self.optionsCommandRegistered and not self.forceCommandRegistration then
 		return
 	end
 
 	local handler = function()
+		if module:ShouldStandDownForMerathilis() then
+			module:OpenMerathilisHoverToolTipOptions()
+			return
+		end
+
 		module:OpenOptions()
 	end
 
@@ -3413,6 +4307,51 @@ function module:RegisterOptionsCommand()
 	_G.SlashCmdList.HOVERTOOLTIP = handler
 
 	self.optionsCommandRegistered = true
+end
+
+function module:RegisterSlashCommands(force)
+	if self.disabledByMerathilisHoverToolTip or self:ShouldStandDownForMerathilis() then
+		self.disabledByMerathilisHoverToolTip = true
+		return
+	end
+
+	self.forceCommandRegistration = force and true or false
+	self:RegisterDebugCommand()
+	self:RegisterOptionsCommand()
+	self.forceCommandRegistration = nil
+end
+
+function module:RegisterCommandRefresh()
+	if self.commandRefreshRegistered or type(CreateFrame) ~= "function" then
+		return
+	end
+
+	local frame = CreateFrame("Frame")
+	frame:RegisterEvent("PLAYER_LOGIN")
+	frame:SetScript("OnEvent", function()
+		if module.disabledByMerathilisHoverToolTip or module:ShouldStandDownForMerathilis() then
+			module.disabledByMerathilisHoverToolTip = true
+			return
+		end
+
+		module:RegisterSlashCommands(true)
+		if C_Timer and type(C_Timer.After) == "function" then
+			local function refreshCommands()
+				if module.disabledByMerathilisHoverToolTip or module:ShouldStandDownForMerathilis() then
+					module.disabledByMerathilisHoverToolTip = true
+					return
+				end
+
+				module:RegisterSlashCommands(true)
+			end
+
+			C_Timer.After(1, refreshCommands)
+			C_Timer.After(3, refreshCommands)
+		end
+	end)
+
+	self.commandRefreshFrame = frame
+	self.commandRefreshRegistered = true
 end
 
 function module:ApplyTextStyle(tooltip, context)
@@ -3425,18 +4364,20 @@ function module:ApplyTextStyle(tooltip, context)
 	local changed = false
 
 	for i = 1, lineCount do
+		local isTitle = self:IsTitleTextLine(tooltip, context, i)
 		local titleSize = context and context.isObject and (db.objectTitleTextSize or db.titleTextSize or 14) or (db.titleTextSize or 14)
 		local bodySize = context and context.isObject and (db.objectBodyTextSize or db.bodyTextSize or 11) or (db.bodyTextSize or 11)
-		local size = i == 1 and titleSize or bodySize
-		local outline = i == 1 and (db.titleTextOutline or "SHADOWOUTLINE") or (db.bodyTextOutline or "SHADOWOUTLINE")
+		local size = isTitle and titleSize or bodySize
+		local outline = isTitle and (db.titleTextOutline or "SHADOWOUTLINE") or (db.bodyTextOutline or "SHADOWOUTLINE")
+		local alpha = isTitle and (db.titleTextAlpha or 1) or (db.textAlpha or 1)
 		local left = GetTooltipLine(tooltip, "Left", i)
 		local right = GetTooltipLine(tooltip, "Right", i)
 
 		changed = ApplyFont(left, size, outline) or changed
 		changed = ApplyFont(right, size, outline) or changed
 
-		SetRegionAlpha(left, db.textAlpha or 1)
-		SetRegionAlpha(right, db.textAlpha or 1)
+		self:SetFontStringVisualAlpha(left, alpha)
+		self:SetFontStringVisualAlpha(right, alpha)
 	end
 
 	return changed
@@ -3470,7 +4411,12 @@ function module:StyleTooltip(tooltip, releaseSuppression)
 		return
 	end
 
-	if self:IsRestrictedInstanceTooltip(tooltip) then
+	if self.disabledByMerathilisHoverToolTip or self:ShouldStandDownForMerathilis() then
+		self.disabledByMerathilisHoverToolTip = true
+		return
+	end
+
+	if self:ShouldUseRestrictedInstancePath(tooltip) then
 		self:StyleInstanceTooltip(tooltip)
 		return
 	end
@@ -3526,6 +4472,10 @@ function module:StyleTooltip(tooltip, releaseSuppression)
 		return
 	end
 
+	if not self:IsCurrentSecretUnitTooltipData(tooltip) then
+		HideSecureInstanceLevelText(tooltip)
+	end
+
 	if context.isWorldTooltip then
 		tooltip.hoverToolTipLastWorldStyleTime = GetTimeSafe()
 	end
@@ -3537,12 +4487,18 @@ function module:StyleTooltip(tooltip, releaseSuppression)
 
 	SetTooltipBackdropAlpha(tooltip, db)
 	TraceLog("after-backdrop", tooltip, context)
+	tooltip.hoverToolTipInfoAboveNameActive = nil
 	self:ApplyTextStyle(tooltip, context)
 	TraceLog("after-text", tooltip, context)
 	self:ApplyManualLineFilters(tooltip, context)
 	TraceLog("after-filters", tooltip, context)
 	self:ApplyUnitInfoPosition(tooltip, context)
 	TraceLog("after-unit-info", tooltip, context)
+	if context.unitKind == "player" and db.hidePlayerSocialStatus and IsDataModificationAllowed(context) then
+		ClearPlayerSocialStatusLines(tooltip)
+	end
+	self:ApplyTextStyle(tooltip, context)
+	TraceLog("after-final-text", tooltip, context)
 	ResizeTooltipToVisibleText(tooltip, context)
 	TraceLog("after-resize", tooltip, context)
 
@@ -3568,7 +4524,7 @@ function module:StyleTooltip(tooltip, releaseSuppression)
 	end
 
 	if context.isWorldTooltip and IsDataModificationAllowed(context) then
-		QueueTooltipLayoutRefresh(tooltip)
+		QueueTooltipLayoutRefresh(tooltip, context)
 	end
 
 	TraceLog("style-end", tooltip, context)
@@ -3580,7 +4536,7 @@ function module:QueueStyleTooltip(tooltip)
 		return
 	end
 
-	if self:IsRestrictedInstanceTooltip(tooltip) then
+	if self:ShouldUseRestrictedInstancePath(tooltip) then
 		self:QueueInstanceStyleTooltip(tooltip)
 		return
 	end
@@ -3681,7 +4637,7 @@ function module:StyleShownTooltipsNow(refreshData)
 
 	for _, tooltip in ipairs(self.tooltips or {}) do
 		if tooltip and tooltip:IsShown() then
-			if self:IsRestrictedInstanceTooltip(tooltip) then
+			if self:ShouldUseRestrictedInstancePath(tooltip) then
 				self:QueueInstanceStyleTooltip(tooltip)
 				return
 			end
@@ -3692,7 +4648,7 @@ function module:StyleShownTooltipsNow(refreshData)
 
 			local _, context = self:ShouldModifyTooltip(tooltip)
 			if refreshData then
-				RefreshTooltipData(tooltip)
+				RefreshTooltipData(tooltip, context)
 			end
 
 			if context and context.isUnitFrameTooltip and tooltip.hoverToolTipSuppressing then
@@ -3712,7 +4668,7 @@ function module:SuppressShownTooltips()
 	end
 
 	for _, tooltip in ipairs(self.tooltips or {}) do
-		if tooltip and tooltip:IsShown() and not self:IsRestrictedInstanceTooltip(tooltip) then
+		if tooltip and tooltip:IsShown() and not self:ShouldUseRestrictedInstancePath(tooltip) then
 			SuppressTooltipUntilStyled(tooltip)
 		end
 	end
@@ -3725,11 +4681,10 @@ function module:QueueModifierRestyle(refreshData, suppress)
 		return
 	end
 
-	if suppress then
-		self:SuppressShownTooltips()
-	end
-
 	if not C_Timer or type(C_Timer.After) ~= "function" then
+		if suppress then
+			self:SuppressShownTooltips()
+		end
 		self:StyleShownTooltipsNow(refreshData)
 		return
 	end
@@ -3739,9 +4694,13 @@ function module:QueueModifierRestyle(refreshData, suppress)
 	self.modifierRestyleSuppress = suppress
 	C_Timer.After(suppress and 0.08 or 0.03, function()
 		local shouldRefresh = module.modifierRestyleRefreshData
+		local shouldSuppress = module.modifierRestyleSuppress
 		module.modifierRestyleQueued = nil
 		module.modifierRestyleRefreshData = nil
 		module.modifierRestyleSuppress = nil
+		if shouldSuppress then
+			module:SuppressShownTooltips()
+		end
 		module:StyleShownTooltipsNow(shouldRefresh)
 	end)
 end
@@ -3775,7 +4734,7 @@ local function ShouldBlockElvUIModifierRefresh(key)
 		return false
 	end
 
-	if module:IsRestrictedInstanceTooltip(tooltip) then
+	if module:ShouldUseRestrictedInstancePath(tooltip) then
 		return false
 	end
 
@@ -3798,7 +4757,7 @@ local function ShouldRefreshForElvUIUnitModifierExtras(key)
 		return false
 	end
 
-	if module:IsRestrictedInstanceTooltip(tooltip) then
+	if module:ShouldUseRestrictedInstancePath(tooltip) then
 		return false
 	end
 
@@ -3942,7 +4901,7 @@ function module:StyleAfterElvUIUnitInfo(tooltip)
 		return
 	end
 
-	if self:IsRestrictedInstanceTooltip(tooltip) then
+	if self:ShouldUseRestrictedInstancePath(tooltip) then
 		self:QueueInstanceStyleTooltip(tooltip)
 		return
 	end
@@ -3970,7 +4929,7 @@ function module:StyleAfterElvUIUnitInfo(tooltip)
 end
 
 function module:PreSuppressElvUIUnitFrameTooltip(owner)
-	if self:IsRestrictedInstanceTooltip(GameTooltip) then
+	if self:IsRestrictedInstanceTooltip(GameTooltip) and not GetBlizzardUnitFrameUnit(owner) then
 		return
 	end
 
@@ -3982,6 +4941,225 @@ function module:PreSuppressElvUIUnitFrameTooltip(owner)
 	GameTooltip.hoverToolTipHoldSuppression = true
 	DebugLog("uuf-pre-suppress", GameTooltip, self:GetTooltipContext(GameTooltip))
 	TraceLog("uuf-pre-suppress", GameTooltip, self:GetTooltipContext(GameTooltip), GetFrameDebugName(owner))
+end
+
+function module:StyleAfterUnitFrameTooltip(owner)
+	if not GameTooltip or IsForbidden(GameTooltip) then
+		return
+	end
+
+	if owner and not IsForbidden(owner) and IsUnitOrNameplateFrame(owner) then
+		PreHideUnitFrameTooltipChrome(GameTooltip, owner)
+		GameTooltip.hoverToolTipHoldSuppression = true
+	end
+
+	local unit = GetBlizzardUnitFrameUnit(owner)
+	if unit and UnitExistsSafe(unit) and (not IsUnitTooltip(GameTooltip) or IsEmptyTooltipShell(GameTooltip, self:GetTooltipContext(GameTooltip))) then
+		if type(GameTooltip.SetOwner) == "function" then
+			local anchorType = self.db and self.db.cursorAnchorType
+			pcall(GameTooltip.SetOwner, GameTooltip, owner or UIParent, anchorType ~= "NONE" and anchorType or "ANCHOR_RIGHT")
+		end
+		if type(GameTooltip.SetUnit) == "function" then
+			GameTooltip.hoverToolTipForcedUnitFrameOwner = owner
+			pcall(GameTooltip.SetUnit, GameTooltip, unit)
+		end
+	end
+
+	if self:ShouldUseRestrictedInstancePath(GameTooltip) then
+		self:QueueInstanceStyleTooltip(GameTooltip)
+		return
+	end
+
+	local shouldModify, context = self:ShouldModifyTooltip(GameTooltip)
+	if shouldModify and context and context.isUnitFrameTooltip then
+		StopUnitFrameTooltipRefresh(context)
+		SuppressTooltipUntilStyled(GameTooltip)
+		self:StyleTooltip(GameTooltip, false)
+		self:QueueUnitFrameTooltipRelease(GameTooltip, UNIT_FRAME_REFRESH_REVEAL_DELAY)
+	end
+end
+
+function module:HideForcedUnitFrameTooltip(owner)
+	if not GameTooltip or IsForbidden(GameTooltip) then
+		return
+	end
+
+	if GameTooltip.hoverToolTipForcedUnitFrameOwner ~= owner then
+		return
+	end
+
+	GameTooltip.hoverToolTipForcedUnitFrameOwner = nil
+	GameTooltip.hoverToolTipHoldSuppression = nil
+	GameTooltip.hoverToolTipSuppressing = nil
+	GameTooltip.hoverToolTipSuppressedAlpha = nil
+	ReleaseTooltipState(GameTooltip)
+	SafeCall(GameTooltip, "Hide")
+end
+
+function module:HookBlizzardUnitFrame(frame)
+	if not frame or frame.hoverToolTipUnitFrameHooked or IsForbidden(frame) then
+		return
+	end
+
+	local function afterEnter(owner)
+		if C_Timer and type(C_Timer.After) == "function" then
+			C_Timer.After(0, function() module:StyleAfterUnitFrameTooltip(owner) end)
+		else
+			module:StyleAfterUnitFrameTooltip(owner)
+		end
+	end
+
+	local function afterLeave(owner)
+		if C_Timer and type(C_Timer.After) == "function" then
+			C_Timer.After(0, function() module:HideForcedUnitFrameTooltip(owner) end)
+		else
+			module:HideForcedUnitFrameTooltip(owner)
+		end
+	end
+
+	local hooked = false
+	if type(frame.GetScript) == "function" and type(frame.SetScript) == "function" then
+		local ok, original = pcall(frame.GetScript, frame, "OnEnter")
+		if ok and type(original) == "function" then
+			pcall(frame.SetScript, frame, "OnEnter", function(owner, ...)
+				module:PreSuppressElvUIUnitFrameTooltip(owner)
+				local result = original(owner, ...)
+				afterEnter(owner)
+				return result
+			end)
+			hooked = true
+		elseif ok and original == nil then
+			pcall(frame.SetScript, frame, "OnEnter", function(owner)
+				module:PreSuppressElvUIUnitFrameTooltip(owner)
+				afterEnter(owner)
+			end)
+			hooked = true
+		end
+	end
+
+	if type(frame.GetScript) == "function" and type(frame.SetScript) == "function" then
+		local ok, originalLeave = pcall(frame.GetScript, frame, "OnLeave")
+		if ok and type(originalLeave) == "function" then
+			pcall(frame.SetScript, frame, "OnLeave", function(owner, ...)
+				local result = originalLeave(owner, ...)
+				afterLeave(owner)
+				return result
+			end)
+		elseif ok and originalLeave == nil then
+			pcall(frame.SetScript, frame, "OnLeave", function(owner)
+				afterLeave(owner)
+			end)
+		end
+	end
+
+	if type(frame.HookScript) == "function" then
+		if not hooked then
+			frame:HookScript("OnEnter", function(owner)
+				module:PreSuppressElvUIUnitFrameTooltip(owner)
+				afterEnter(owner)
+			end)
+		end
+
+		frame:HookScript("OnLeave", function(owner)
+			afterLeave(owner)
+		end)
+
+		hooked = true
+	end
+
+	if hooked then
+		frame.hoverToolTipUnitFrameHooked = true
+	end
+end
+
+function module:HookBlizzardUnitFrameTree(frame, depth)
+	if not frame or depth > 3 or IsForbidden(frame) then
+		return
+	end
+
+	self:HookBlizzardUnitFrame(frame)
+
+	if type(frame.GetChildren) ~= "function" then
+		return
+	end
+
+	local children = { pcall(frame.GetChildren, frame) }
+	if not children[1] then
+		return
+	end
+
+	for index = 2, #children do
+		self:HookBlizzardUnitFrameTree(children[index], depth + 1)
+	end
+end
+
+function module:RegisterBlizzardUnitFrameHooks(isRetry)
+	if self.blizzardUnitFrameHooksRegistered and not isRetry then
+		return
+	end
+
+	if self:HasElvUIUnitFrames() then
+		return
+	end
+
+	local frameNames = {
+		"PlayerFrame",
+		"PlayerFrameContent",
+		"PlayerFrame.PlayerFrameContent",
+		"PetFrame",
+		"TargetFrame",
+		"TargetFrameToT",
+		"FocusFrame",
+		"FocusFrameToT",
+	}
+
+	for _, name in ipairs(frameNames) do
+		local frame = _G[name]
+		if not frame and strfind(name, ".", 1, true) then
+			local rootName, childName = strmatch(name, "^([^%.]+)%.(.+)$")
+			frame = rootName and childName and _G[rootName] and _G[rootName][childName]
+		end
+		self:HookBlizzardUnitFrameTree(frame, 1)
+	end
+
+	if not isRetry and C_Timer and type(C_Timer.After) == "function" then
+		C_Timer.After(1, function()
+			module:RegisterBlizzardUnitFrameHooks(true)
+		end)
+	end
+
+	self.blizzardUnitFrameHooksRegistered = true
+end
+
+function module:RegisterDefaultAnchorHook()
+	if self.defaultAnchorHooked or type(hooksecurefunc) ~= "function" or type(_G.GameTooltip_SetDefaultAnchor) ~= "function" then
+		return
+	end
+
+	hooksecurefunc("GameTooltip_SetDefaultAnchor", function(tooltip, owner)
+		PreHideUnitFrameTooltipChrome(tooltip, owner)
+
+		local db = module.db
+		local anchorType = db and db.cursorAnchorType
+		if _G.ElvUI
+			or not tooltip
+			or IsForbidden(tooltip)
+			or tooltip.hoverToolTipApplyingDefaultAnchor
+			or not owner
+			or IsForbidden(owner)
+			or not anchorType
+			or anchorType == "NONE"
+			or type(tooltip.SetOwner) ~= "function"
+		then
+			return
+		end
+
+		tooltip.hoverToolTipApplyingDefaultAnchor = true
+		pcall(tooltip.SetOwner, tooltip, owner, anchorType)
+		tooltip.hoverToolTipApplyingDefaultAnchor = nil
+	end)
+
+	self.defaultAnchorHooked = true
 end
 
 function module:RegisterElvUITooltipHooks()
@@ -4017,13 +5195,6 @@ function module:RegisterElvUITooltipHooks()
 		end)
 	end
 
-	if type(_G.GameTooltip_SetDefaultAnchor) == "function" and not self.defaultAnchorHooked then
-		hooksecurefunc("GameTooltip_SetDefaultAnchor", function(tooltip, owner)
-			PreHideUnitFrameTooltipChrome(tooltip, owner)
-		end)
-		self.defaultAnchorHooked = true
-	end
-
 	local UF = E:GetModule("UnitFrames", true)
 	if UF and type(UF.UnitFrame_OnEnter) == "function" and not UF.hoverToolTipOriginalUnitFrameOnEnter then
 		UF.hoverToolTipOriginalUnitFrameOnEnter = UF.UnitFrame_OnEnter
@@ -4051,7 +5222,7 @@ function module:HookTooltip(tooltip)
 	self.styledTooltips[tooltip] = true
 
 	HookTooltipScript(tooltip, "OnShow", function(frame)
-		if module:IsRestrictedInstanceTooltip(frame) then
+		if module:ShouldUseRestrictedInstancePath(frame) then
 			module:QueueInstanceStyleTooltip(frame)
 			return
 		end
@@ -4062,7 +5233,7 @@ function module:HookTooltip(tooltip)
 	end)
 
 	HookTooltipScript(tooltip, "OnTooltipSetUnit", function(frame)
-		if module:IsRestrictedInstanceTooltip(frame) then
+		if module:ShouldUseRestrictedInstancePath(frame) then
 			module:QueueInstanceStyleTooltip(frame)
 			return
 		end
@@ -4081,7 +5252,7 @@ function module:HookTooltip(tooltip)
 	end)
 
 	HookTooltipScript(tooltip, "OnTooltipSetItem", function(frame)
-		if module:IsRestrictedInstanceTooltip(frame) then
+		if module:ShouldUseRestrictedInstancePath(frame) then
 			module:QueueInstanceStyleTooltip(frame)
 			return
 		end
@@ -4092,7 +5263,7 @@ function module:HookTooltip(tooltip)
 	end)
 
 	HookTooltipScript(tooltip, "OnUpdate", function(frame)
-		if module:IsRestrictedInstanceTooltip(frame) then
+		if module:ShouldUseRestrictedInstancePath(frame) then
 			local styleUntil = frame.hoverToolTipInstanceStyleUntil
 			if not IsSecretValue(styleUntil) and type(styleUntil) == "number" and GetTimeSafe() <= styleUntil then
 				module:StyleInstanceTooltip(frame, true)
@@ -4126,7 +5297,7 @@ function module:HookTooltip(tooltip)
 	end)
 
 	HookTooltipScript(tooltip, "OnHide", function(frame)
-		if module:IsRestrictedInstanceTooltip(frame) then
+		if module:ShouldUseRestrictedInstancePath(frame) then
 			module:HideInstanceTooltip()
 			return
 		end
@@ -4143,6 +5314,7 @@ function module:HookTooltip(tooltip)
 		frame.hoverToolTipHoldSuppression = nil
 		frame.hoverToolTipSuppressing = nil
 		frame.hoverToolTipSuppressedAlpha = nil
+		HideSecureInstanceLevelText(frame)
 		ReleaseTooltipState(frame)
 	end)
 end
@@ -4172,6 +5344,13 @@ function module:CollectTooltips()
 end
 
 function module:Refresh()
+	if self:ShouldStandDownForMerathilis() then
+		self.disabledByMerathilisHoverToolTip = true
+		self:HideInstanceTooltip()
+		return
+	end
+
+	self.disabledByMerathilisHoverToolTip = nil
 	self.db = self:GetDB()
 	if not self.db or not self.db.enable then
 		self:HideInstanceTooltip()
@@ -4185,21 +5364,38 @@ end
 
 function module:Initialize()
 	self.db = self:GetDB()
+	if self:ShouldStandDownForMerathilis() then
+		self.disabledByMerathilisHoverToolTip = true
+		print("HoverToolTip disabled: MerathilisUI HoverToolTip or Name Hover is enabled.")
+		return
+	end
+
+	self.disabledByMerathilisHoverToolTip = nil
 	self:CollectTooltips()
 	self:RegisterLineFilters()
-	self:RegisterDebugCommand()
-	self:RegisterOptionsCommand()
+	self:RegisterSlashCommands()
+	self:RegisterCommandRefresh()
 	self:RegisterModifierWatcher()
 	self:RegisterInstanceWatcher()
 	self:RegisterMouseWatcher()
-	self:RegisterElvUITooltipHooks()
+	self:RegisterDefaultAnchorHook()
+	if self:HasElvUIUnitFrames() then
+		self:RegisterElvUITooltipHooks()
+	else
+		self:RegisterBlizzardUnitFrameHooks()
+	end
 
 	self.initialized = true
 end
 
--- Standalone addon is initialized through AceAddon in Init.lua
+-- Standalone addon is initialized through ADDON_LOADED in Init.lua
 
 _G.HoverToolTip_SetDetailsBindingState = function(isHeld)
+	if module.disabledByMerathilisHoverToolTip or module:ShouldStandDownForMerathilis() then
+		module.disabledByMerathilisHoverToolTip = true
+		return
+	end
+
 	module.detailsBindingHeld = isHeld and true or false
 	module.lastDetailsOverrideActive = IsDetailsOverrideActive()
 	module:StyleShownTooltipsNow(true)

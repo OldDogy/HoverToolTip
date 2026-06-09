@@ -2,11 +2,10 @@
 ## Author: OldDogy
 ## Version: 0.1.0
 ## Title: HoverToolTip
-## Notes: Standalone HoverToolTip module for ElvUI.
+## Notes: Standalone tooltip styling with optional ElvUI integration.
 ## DefaultState: Enabled
-## Dependencies: ElvUI
-## OptionalDeps: Details
-## SavedVariables: HoverToolTipDB
+## OptionalDeps: ElvUI, ElvUI_MerathilisUI, Details
+## SavedVariables: HoverToolTipDB, HoverToolTipTestDB
 ## Bindings: Bindings.xml
 ## X-Flavor: Mainline
 
