@@ -1,6 +1,7 @@
 # HoverToolTip
 
 Standalone tooltip styling addon for World of Warcraft Retail.
+Works with Vanilla or alongside ElvUI.
 
 HoverToolTip was built as its own tooltip module and originally lived inside ElvUI_MerathilisUI during development. It is inspired by the idea behind MerathilisUI's NameHover module, but it is not an extraction of MerathilisUI code.
 
@@ -10,6 +11,7 @@ HoverToolTip styles Blizzard's native `GameTooltip` directly instead of copying 
 
 - World of Warcraft: Retail, interface `120005`
 - Optional: ElvUI
+- Optional: MerathilisUI
 - Optional: Details
 
 ## Features
